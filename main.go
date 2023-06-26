@@ -2,32 +2,26 @@ package main
 
 import (
 	"fmt"
+	"golang.org/x/net/context"
 	"golang.org/x/net/proxy"
 	"io"
+	"net"
 	"net/http"
+	"time"
 )
 
 func main() {
+	network := "tcp"
+	address := "13.208.212.66:1080"
 	auth := proxy.Auth{
 		User:     "test",
 		Password: "1234",
 	}
 
-	// Set up SOCKS5 proxy dialer
-	dialer, err := proxy.SOCKS5("tcp", "13.208.212.66:1080", &auth, proxy.Direct)
-	if err != nil {
-		fmt.Println("Error creating SOCKS5 dialer:", err)
-		return
-	}
-
-	// Create a transport using the SOCKS5 proxy dialer
-	tr := &http.Transport{Dial: dialer.Dial}
-
-	// Create an HTTP client with the custom transport
-	client := &http.Client{Transport: tr}
+	client, _ := newHttpClient(network, address, &auth)
 
 	// Make an HTTP GET request
-	resp, err := client.Get("https://ifconfig.me/ip")
+	resp, err := client.Get("https://ifconfig.me")
 	if err != nil {
 		fmt.Println("Error making GET request:", err)
 		return
@@ -50,4 +44,51 @@ func getBody(response *http.Response) (string, error) {
 		return "", err
 	}
 	return string(body), nil
+}
+
+type dialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
+
+func newDialContext(network, address string, auth *proxy.Auth) (dialContextFunc, error) {
+	baseDialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
+	if address != "" {
+		dialSocksProxy, err := proxy.SOCKS5(network, address, auth, baseDialer)
+		if err != nil {
+			return nil, err
+		}
+
+		contextDialer, ok := dialSocksProxy.(proxy.ContextDialer)
+		if !ok {
+			return nil, err
+		}
+
+		return contextDialer.DialContext, nil
+	} else {
+		return baseDialer.DialContext, nil
+	}
+}
+
+func newHttpClient(network, address string, auth *proxy.Auth) (*http.Client, error) {
+	dialContext, err := newDialContext(network, address, auth)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     false, // disable http2
+			DisableCompression:    true,  // To get the original response from the server, set Transport.DisableCompression to true.
+		},
+	}
+
+	return client, nil
 }
