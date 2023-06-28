@@ -1,4 +1,4 @@
-module socks5-client
+module github.com/hankli0130/socks5-client-demo
 
 go 1.20
 
